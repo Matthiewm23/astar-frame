@@ -59,6 +59,10 @@ pub trait WeightInfo {
 	fn maintenance_mode() -> Weight;
 	fn set_reward_destination() -> Weight;
 	fn nomination_transfer() -> Weight;
+	fn set_delegate_third_account() -> Weight;
+	fn set_delegation() -> Weight;
+	fn remove_delegation() -> Weight;
+
 }
 
 /// Weights for pallet_staking using the Substrate node and recommended hardware.
@@ -169,4 +173,23 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(1 as u64))
 			.saturating_add(T::DbWeight::get().writes(1 as u64))
 	}
+	// (r:2 w:1)
+	fn set_delegation() -> Weight {
+		Weight::from_ref_time(23_412_000 as u64)
+			.saturating_add(T::DbWeight::get().reads(2 as u64))
+			.saturating_add(T::DbWeight::get().writes(1 as u64))
+	}	
+	// (r:1 w:1)
+	fn remove_delegation() -> Weight {
+		Weight::from_ref_time(23_412_000 as u64)
+			.saturating_add(T::DbWeight::get().reads(1 as u64))
+			.saturating_add(T::DbWeight::get().writes(1 as u64))
+	}	
+	// (r:1 w:1)
+	fn set_delegate_third_account() -> Weight {
+		Weight::from_ref_time(23_412_000 as u64)
+			.saturating_add(T::DbWeight::get().reads(1 as u64))
+			.saturating_add(T::DbWeight::get().writes(1 as u64))
+	}
 }
+
