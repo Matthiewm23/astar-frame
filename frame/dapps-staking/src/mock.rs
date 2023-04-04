@@ -152,6 +152,8 @@ impl pallet_dapps_staking::Config for TestRuntime {
     type UnbondingPeriod = UnbondingPeriod;
     type MaxEraStakeValues = MaxEraStakeValues;
     type UnregisteredDappRewardRetention = ConstU32<REWARD_RETENTION_PERIOD>;
+    type MaxContractsDelegation = ConstU32<10000>;  // We put by default 10000 contracts delegations for a user - can be changed handly
+
 }
 
 #[derive(
