@@ -488,8 +488,7 @@ pub(crate) fn assert_nomination_transfer(
     }
 }
 
-/// Used to perform claim for stakers with success assertion
-pub(crate) fn assert_claim_staker(claimer: AccountId, contract_id: &MockSmartContract<AccountId>) {
+pub(crate) fn assert_claim_staker(claimer: AccountId, contract_id: &MockSmartContract<AccountId>, delegated_account: Option<AccountId>) { // We add an option of delegated_account
     let (claim_era, _) = DappsStaking::staker_info(&claimer, contract_id).claim();
     let current_era = DappsStaking::current_era();
 
@@ -518,10 +517,16 @@ pub(crate) fn assert_claim_staker(claimer: AccountId, contract_id: &MockSmartCon
             * stakers_joint_reward;
     let issuance_before_claim = <TestRuntime as Config>::Currency::total_issuance();
 
+    // We take the balance before the claim_staker of the delegated account
+    let delegated_init_free_balance = delegated_account.map(|account| <TestRuntime as Config>::Currency::free_balance(&account));
+
     assert_ok!(DappsStaking::claim_staker(
         RuntimeOrigin::signed(claimer),
         contract_id.clone(),
     ));
+
+    // We take the balance after the claim_staker of the delegated account
+    let delegated_final_free_balance = delegated_account.map(|account| <TestRuntime as Config>::Currency::free_balance(&account));
 
     let final_state_current_era = MemorySnapshot::all(current_era, contract_id, claimer);
 
@@ -530,6 +535,9 @@ pub(crate) fn assert_claim_staker(claimer: AccountId, contract_id: &MockSmartCon
         &init_state_current_era,
         &final_state_current_era,
         calculated_reward,
+        delegated_account, // We add three parameters to this function
+        delegated_init_free_balance,
+        delegated_final_free_balance,
     );
 
     // check for stake event if restaking is performed
@@ -586,6 +594,9 @@ fn assert_restake_reward(
     init_state_current_era: &MemorySnapshot,
     final_state_current_era: &MemorySnapshot,
     reward: Balance,
+    delegated_account: Option<AccountId>, // If we have a delegated account, we will be able to compare the free balance
+    delegated_init_free_balance: Option<Balance>,
+    delegated_final_free_balance: Option<Balance>,
 ) {
     if DappsStaking::should_restake_reward(
         init_state_current_era.ledger.reward_destination,
@@ -611,10 +622,17 @@ fn assert_restake_reward(
         );
     } else {
         // staked values should remain the same, and free balance increase
-        assert_eq!(
-            init_state_current_era.free_balance + reward,
-            final_state_current_era.free_balance
-        );
+     
+        if let Some(_account) = delegated_account { // If we have a delegated account
+            if let (Some(init_free_balance), Some(final_free_balance)) = (delegated_init_free_balance, delegated_final_free_balance) {
+                assert_eq!(init_free_balance + reward, final_free_balance); // We make sure the free balance increase
+            }
+        } else {
+            assert_eq!(
+                init_state_current_era.free_balance + reward, // If there is no delegated_account, we check the free balance of the staker
+                final_state_current_era.free_balance
+            );
+        }
         assert_eq!(
             init_state_current_era.era_info.staked,
             final_state_current_era.era_info.staked
@@ -627,6 +645,7 @@ fn assert_restake_reward(
             init_state_current_era.contract_info,
             final_state_current_era.contract_info
         );
+
     }
 }
 

@@ -531,8 +531,8 @@ fn withdraw_from_unregistered_is_ok() {
 
         // Claim all past rewards
         for era in 1..DappsStaking::current_era() {
-            assert_claim_staker(staker_1, &contract_id);
-            assert_claim_staker(staker_2, &contract_id);
+            assert_claim_staker(staker_1, &contract_id,None);
+            assert_claim_staker(staker_2, &contract_id,None);
             assert_claim_dapp(&contract_id, era);
         }
 
@@ -644,7 +644,7 @@ fn withdraw_from_unregistered_when_unclaimed_rewards_remaining() {
                 ),
                 Error::<TestRuntime>::UnclaimedRewardsRemaining
             );
-            assert_claim_staker(staker, &contract_id);
+            assert_claim_staker(staker, &contract_id,None);
         }
 
         // Withdraw should work after all rewards have been claimed
@@ -1576,7 +1576,7 @@ fn claim_not_operated_contract() {
         assert_unregister(developer, &contract_id);
 
         // First claim should pass but second should fail because contract was unregistered
-        assert_claim_staker(staker, &contract_id);
+        assert_claim_staker(staker, &contract_id,None);
         assert_noop!(
             DappsStaking::claim_staker(RuntimeOrigin::signed(staker), contract_id),
             Error::<TestRuntime>::NotOperatedContract
@@ -1605,7 +1605,7 @@ fn claim_invalid_era() {
         advance_to_era(start_era + 5);
 
         for era in start_era..DappsStaking::current_era() {
-            assert_claim_staker(staker, &contract_id);
+            assert_claim_staker(staker, &contract_id,None);
             assert_claim_dapp(&contract_id, era);
         }
 
@@ -1683,9 +1683,9 @@ fn claim_is_ok() {
         // Ensure that all past eras can be claimed
         let current_era = DappsStaking::current_era();
         for era in start_era..current_era {
-            assert_claim_staker(first_staker, &first_contract_id);
+            assert_claim_staker(first_staker, &first_contract_id,None);
             assert_claim_dapp(&first_contract_id, era);
-            assert_claim_staker(second_staker, &first_contract_id);
+            assert_claim_staker(second_staker, &first_contract_id,None);
         }
 
         // Shouldn't be possible to claim current era.
@@ -1743,7 +1743,7 @@ fn claim_after_unregister_is_ok() {
 
         // Ensure that staker can claim all the eras that he had an active stake
         for _ in 0..number_of_staking_eras {
-            assert_claim_staker(staker, &contract_id);
+            assert_claim_staker(staker, &contract_id,None);
         }
         assert_noop!(
             DappsStaking::claim_staker(RuntimeOrigin::signed(staker), contract_id.clone()),
@@ -1788,7 +1788,7 @@ fn claim_only_payout_is_ok() {
         assert_set_reward_destination(staker, RewardDestination::FreeBalance);
 
         // ensure it's claimed correctly
-        assert_claim_staker(staker, &contract_id);
+        assert_claim_staker(staker, &contract_id,None);
     })
 }
 
@@ -1815,7 +1815,7 @@ fn claim_with_zero_staked_is_ok() {
         assert_unbond_and_unstake(staker, &contract_id, stake_value);
 
         // ensure claimed value goes to claimer's free balance
-        assert_claim_staker(staker, &contract_id);
+        assert_claim_staker(staker, &contract_id,None);
     })
 }
 
@@ -1838,13 +1838,13 @@ fn claims_with_different_reward_destination_is_ok() {
         assert_set_reward_destination(staker, RewardDestination::FreeBalance);
         advance_to_era(start_era + 1);
         // ensure staker can claim rewards to wallet
-        assert_claim_staker(staker, &contract_id);
+        assert_claim_staker(staker, &contract_id,None);
 
         // enable compounding mode, wait 3 eras
         assert_set_reward_destination(staker, RewardDestination::StakeBalance);
         advance_to_era(start_era + 2);
         // ensure staker can claim with compounding
-        assert_claim_staker(staker, &contract_id);
+        assert_claim_staker(staker, &contract_id,None);
     })
 }
 
@@ -1869,7 +1869,7 @@ fn claiming_when_stakes_full_without_compounding_is_ok() {
         assert_set_reward_destination(staker_id, RewardDestination::StakeBalance);
 
         // claim and restake once, so there's a claim record for the for the current era in the stakes vec
-        assert_claim_staker(staker_id, &contract_id);
+        assert_claim_staker(staker_id, &contract_id,None);
 
         // making another gap in eras and trying to claim and restake would exceed MAX_ERA_STAKE_VALUES
         advance_to_era(DappsStaking::current_era() + 1);
@@ -1882,7 +1882,7 @@ fn claiming_when_stakes_full_without_compounding_is_ok() {
         assert_set_reward_destination(staker_id, RewardDestination::FreeBalance);
 
         // claiming should work again
-        assert_claim_staker(staker_id, &contract_id);
+        assert_claim_staker(staker_id, &contract_id,None);
     })
 }
 
@@ -2316,5 +2316,244 @@ fn burn_stale_reward_negative_checks() {
             DappsStaking::burn_stale_reward(RuntimeOrigin::root(), contract_id, start_era,),
             Error::<TestRuntime>::AlreadyClaimedInThisEra
         );
+    })
+}
+
+#[test]
+fn set_delegation() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ;
+        System::assert_last_event(mock::RuntimeEvent::DappsStaking(Event::RewardDelegateSet(
+            staker,
+            contract_id,
+            delegated_account,
+        )));
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+        assert_claim_staker(staker, &contract_id , Some(delegated_account));
+    })
+}
+
+#[test]
+fn remove_delegation() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ;
+        System::assert_last_event(mock::RuntimeEvent::DappsStaking(Event::RewardDelegateSet(
+            staker,
+            contract_id,
+            delegated_account,
+        )));
+        assert_ok!(DappsStaking::remove_delegation( RuntimeOrigin::signed(staker), contract_id)) ;
+        System::assert_last_event(mock::RuntimeEvent::DappsStaking(Event::RewardDelegateRemoved(
+            staker,
+            contract_id,
+        )));
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+       assert_claim_staker(staker, &contract_id , None);
+        })
+}
+
+#[test]
+fn remove_delegation_then_set_new_delegation() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+        let delegated_account_new = 4;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ;
+        assert_ok!(DappsStaking::remove_delegation( RuntimeOrigin::signed(staker), contract_id)) ;
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account_new)) ;
+
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+       assert_claim_staker(staker, &contract_id , Some(delegated_account_new));
+        })
+}
+
+#[test]
+fn delegate_third_account() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+        let delegated_of_delegated = 4;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ; 
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(delegated_account), contract_id, delegated_of_delegated)) ;
+        assert_ok!(DappsStaking::set_delegate_third_account( RuntimeOrigin::signed(staker), contract_id, true)) ; // We put true to accept the third account delegation
+        System::assert_last_event(mock::RuntimeEvent::DappsStaking(Event::SetThirdDelegate(
+            staker,
+            contract_id,
+            true,
+        )));
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+        assert_claim_staker(staker, &contract_id , Some(delegated_of_delegated)); // As we put true for the delegation of staker, it will direclty send rewards to the delegate of the delegated
+
+    })
+}
+
+#[test]
+fn delegate_third_account_not_activated() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+        let delegated_of_delegated = 4;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ; 
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(delegated_account), contract_id, delegated_of_delegated)) ; 
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+        assert_claim_staker(staker, &contract_id , Some(delegated_account));  // We have to put delegated_account because the third accound has not been activated
+    })
+}
+
+#[test]
+fn delegate_back_to_himself() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ; 
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+        assert_claim_staker(staker, &contract_id , Some(delegated_account)); 
+
+        assert_ok!(DappsStaking::remove_delegation( RuntimeOrigin::signed(staker), contract_id)) ;
+
+        advance_to_era(start_era + 2);
+        assert_claim_staker(staker, &contract_id , Some(staker));  // Equivalent to put None instead of Some(staker)
+    })
+}
+
+#[test]
+fn two_delegate_for_two_contract_delegation() {
+    ExternalityBuilder::build().execute_with(|| {
+        initialize_first_block();
+
+        let developer = 1;
+        let staker = 2;
+        let delegated_account = 3;
+        let developer2 = 4;
+        let delegated_account2 = 5;
+
+        let contract_id = MockSmartContract::Evm(H160::repeat_byte(0x01));
+        let contract_id2 = MockSmartContract::Evm(H160::repeat_byte(0x02));
+
+        // stake some tokens
+        let start_era = DappsStaking::current_era();
+        assert_register(developer, &contract_id);
+        assert_register(developer2, &contract_id2);
+
+        let stake_value = 100;
+        assert_bond_and_stake(staker, &contract_id, stake_value);
+        assert_bond_and_stake(staker, &contract_id2, stake_value);
+
+        // We set delegation
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id, delegated_account)) ; 
+        assert_ok!(DappsStaking::set_delegation( RuntimeOrigin::signed(staker), contract_id2, delegated_account2)) ; 
+
+        // disable compounding mode, wait 3 eras
+        assert_set_reward_destination(staker, RewardDestination::FreeBalance);
+        advance_to_era(start_era + 1);
+        // ensure staker can claim rewards to wallet
+        assert_claim_staker(staker, &contract_id , Some(delegated_account)); 
+        assert_claim_staker(staker, &contract_id2 , Some(delegated_account2));
     })
 }
