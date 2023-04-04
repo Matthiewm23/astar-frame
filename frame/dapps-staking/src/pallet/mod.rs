@@ -114,6 +114,10 @@ pub mod pallet {
 
         /// Weight information for extrinsics in this pallet.
         type WeightInfo: WeightInfo;
+
+        /// Max Contracts that a user can delegate
+        type MaxContractsDelegation: Get<u32>; 
+
     }
 
     /// Denotes whether pallet is disabled (in maintenance mode) or not
@@ -204,6 +208,23 @@ pub mod pallet {
     #[pallet::getter(fn storage_version)]
     pub(crate) type StorageVersion<T> = StorageValue<_, Version, ValueQuery>;
 
+    /// Information about stakers's delegation (smart-contract specific).
+    #[pallet::storage]
+    #[pallet::getter(fn delegatation)]
+    pub type Delegation<T: Config> = 
+       StorageMap<_, Blake2_128Concat, T::AccountId, BoundedVec<Delegate<T>, T::MaxContractsDelegation>>;
+
+
+    /// Each delegate will be smart contract specicif. 
+    #[derive(PartialEqNoBound, EqNoBound, Encode, Decode, TypeInfo, MaxEncodedLen, Debug, Clone)]
+    #[scale_info(skip_type_params(T))]
+    pub struct Delegate<T: Config> {
+        pub smart_contract: T::SmartContract,
+        pub delegated : T::AccountId, /// Account to put rewards
+        pub delegated_has_delegated : bool, /// True if the delegated has himself delegated
+        pub active_third_account : bool, // True if we want to delegate rewards to third account (delegate of delegate)
+    }
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(crate) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -240,6 +261,12 @@ pub mod pallet {
         ///
         /// \(developer account, smart contract, era, amount burned\)
         StaleRewardBurned(T::AccountId, T::SmartContract, EraIndex, BalanceOf<T>),
+        /// Set elegate of rewards
+        RewardDelegateSet(T::AccountId, T::SmartContract, T::AccountId),
+        /// Remove delegate of rewards
+        RewardDelegateRemoved(T::AccountId, T::SmartContract),
+        /// Set delegate rewards to third account
+        SetThirdDelegate(T::AccountId, T::SmartContract, bool),
     }
 
     #[pallet::error]
@@ -292,6 +319,14 @@ pub mod pallet {
         NotActiveStaker,
         /// Transfering nomination to the same contract
         NominationTransferToSameContract,
+        /// Maximum Delegation for a user exceed
+        ExceedMaxDelegation,
+        /// No delegate account for the staker
+        NoDelegateAccount,
+        /// The delegate account has not himself delegate account
+        NoThirdAccountAvailable,
+        /// Contract id not found for a staker
+        ContractIdNotFound,
     }
 
     #[pallet::hooks]
@@ -799,7 +834,35 @@ pub mod pallet {
                 ));
             }
 
-            T::Currency::resolve_creating(&staker, reward_imbalance);
+            // Check what is the reward account 
+            // By default, it is staker
+            let mut reward_account = staker.clone();
+
+            // If the staker has delegate, we continue
+            if Delegation::<T>::contains_key(&staker) {
+                // All the delegations of the staker (bounded vector of Delegate)
+                let delegations = Delegation::<T>::get(&staker).ok_or(<Error<T>>::NoDelegateAccount)?;
+                // We iter of the bounded vector and find the one with the correct smart contract id
+                if let Some(delegate) = delegations.iter().find(|d| d.smart_contract == contract_id) {
+                    // If we want to go to the third account
+                    if delegate.active_third_account {
+                        // We need to find this account
+                        let delegations_third_account = Delegation::<T>::get(&delegate.delegated.clone()).ok_or(<Error<T>>::NoDelegateAccount)?;
+                        if let Some(delegate_third_account) = delegations_third_account.iter().find(|d| d.smart_contract == contract_id) {
+                            // The reward account is then the delegated of the delegated
+                            reward_account = delegate_third_account.delegated.clone();
+                        } else {
+                            return Err(<Error<T>>::ContractIdNotFound.into());
+                        }
+                    // If we don't want to go to the third account, we just put the delegate as the reward account
+                    } else {
+                        reward_account = delegate.delegated.clone();
+                    }
+                } 
+            }
+
+            // We call resolve_creating with reward account;
+            T::Currency::resolve_creating(&reward_account, reward_imbalance);
             Self::update_staker_info(&staker, &contract_id, staker_info);
             Self::deposit_event(Event::<T>::Reward(staker, contract_id, era, staker_reward));
 
@@ -810,6 +873,7 @@ pub mod pallet {
             })
             .into())
         }
+
 
         /// Claim earned dapp rewards for the specified era.
         ///
@@ -984,8 +1048,104 @@ pub mod pallet {
 
             Ok(().into())
         }
-    }
+        
+        /// Set delegation function 
+        #[pallet::call_index(14)]
+        #[pallet::weight(T::WeightInfo::set_delegation())]
+        pub fn set_delegation(
+            origin: OriginFor<T>,
+            contract_id: T::SmartContract, // Contract id 
+            delegated_account : T::AccountId, // Account we want to delegate reward
+        ) -> DispatchResultWithPostInfo {
+            let staker = ensure_signed(origin)?;
 
+            if let Some(mut all_delegations) = Delegation::<T>::get(staker.clone()) {
+                
+                let new_delegation = Delegate {
+                    smart_contract: contract_id.clone(),
+                    delegated: delegated_account.clone(),
+                    delegated_has_delegated : Delegation::<T>::contains_key(&delegated_account), // To know if our delegated has delegated account himself
+                    active_third_account : false, // By default false 
+                };
+                all_delegations
+                .try_push(new_delegation) 
+                .map_err(|_x| <Error<T>>::ExceedMaxDelegation)?;
+        
+                Delegation::<T>::insert(staker.clone(), all_delegations);
+
+            // If stakers has no delegation, we create it
+            } else {
+                
+                let new_delegation = Delegate {
+                    smart_contract: contract_id.clone(),
+                    delegated: delegated_account.clone(),
+                    delegated_has_delegated : Delegation::<T>::contains_key(&delegated_account),
+                    active_third_account : false, 
+        
+                };
+                let mut all_delegations : BoundedVec::<Delegate<T>, T::MaxContractsDelegation> = Default::default();
+                all_delegations.try_push(new_delegation)
+                .map_err(|_x| <Error<T>>::ExceedMaxDelegation)?;
+        
+                Delegation::<T>::insert(staker.clone(), all_delegations);
+            }
+            Self::deposit_event(Event::<T>::RewardDelegateSet(staker, contract_id, delegated_account));
+
+            Ok(().into())
+        }
+
+        /// Remove the delegation of one contract
+        #[pallet::call_index(15)]
+        #[pallet::weight(T::WeightInfo::remove_delegation())]
+        pub fn remove_delegation(
+            origin: OriginFor<T>,
+            contract_id: T::SmartContract,
+        ) -> DispatchResultWithPostInfo {
+            let staker = ensure_signed(origin)?;
+            if let Some(mut all_delegations) = Delegation::<T>::get(staker.clone()) {
+
+                // We update the delegations by only keeping the one that don't match the contract id
+                all_delegations.retain(|delegation| delegation.smart_contract != contract_id.clone());
+                Delegation::<T>::insert(staker.clone(), all_delegations);
+            }
+
+            Self::deposit_event(Event::<T>::RewardDelegateRemoved(staker, contract_id));
+            Ok(().into())
+        }
+
+        // If true, allow the user to send reward to delegated of delegated account
+        #[pallet::call_index(16)]
+        #[pallet::weight(T::WeightInfo::set_delegate_third_account())]
+        pub fn set_delegate_third_account(
+            origin: OriginFor<T>,
+            contract_id: T::SmartContract,
+            active_third_account: bool,
+        ) -> DispatchResultWithPostInfo {
+
+            let staker = ensure_signed(origin)?;
+            // We select all delegations
+            if let Some(mut all_delegations) = Delegation::<T>::get(staker.clone()) {
+                //We select the one with good smart contract id
+                if let Some(delegation) = all_delegations.iter_mut().find(|d| d.smart_contract == contract_id) {
+                    
+                    if let Some(mut all_delegations_third_account) = Delegation::<T>::get(delegation.delegated.clone()) {
+                        // We make sure that the delegated account has himself a delegated for the smart contract id
+                        if active_third_account { // We do it only if it is true, because, if it is false, we have no worries to put active_third_account to false
+                            ensure!(all_delegations_third_account.iter_mut().any(|d| d.smart_contract == contract_id), <Error<T>>::NoThirdAccountAvailable);
+                        }
+                        // If yes, we change the 
+                        delegation.active_third_account = active_third_account;
+                        Delegation::<T>::insert(staker.clone(), all_delegations);
+                        Self::deposit_event(Event::<T>::SetThirdDelegate(staker, contract_id, active_third_account));
+                    }
+                } else {
+                    return Err(<Error<T>>::ContractIdNotFound.into());
+                }
+            } 
+            Ok(().into())
+        }
+    }
+    
     impl<T: Config> Pallet<T> {
         /// Calculate the dApp reward for the specified era.
         /// If successfull, returns reward amount.
